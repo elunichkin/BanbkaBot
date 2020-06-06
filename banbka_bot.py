@@ -130,7 +130,8 @@ def main():
                    "/countdown — Получить обратный отсчёт до следующей банбки.\n" \
                    "/getloc — Получить координаты следующей банбки и ссылку на Яндекс.Карты.\n" \
                    "/getinfo — Получить полную информацию о следующей банбке.\n" \
-                   "/help — Получить это сообщение."
+                   "/help — Получить это сообщение.\n\n" \
+                   "Исходный код: https://github.com/elunichkin/BanbkaBot"
             banyaBot.send_message(chat_id=msg_chat,
                                   text=text,
                                   parse_mode='markdown')

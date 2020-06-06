@@ -2,7 +2,7 @@ import requests
 import json
 import pickle
 from collections import deque
-import postgresql
+from psycopg2 import connect as pg_connect, errors as pg_errors
 
 
 class BotHandler:
@@ -23,10 +23,11 @@ class BotHandler:
         self.updates = deque()
 
         if db:
-            self.dbconnector = DBConnector(url=db[0], user=db[1], password=db[2], schema=db[3])
+            conn = tuple(db)
         elif db_file:
             with open(db_file, 'rb') as infile:
-                self.dbconnector = DBConnector(*pickle.load(infile))
+                conn = tuple(pickle.load(infile))
+        self.db = DBConnector(*conn)
 
     # API methods:
     def get_updates(self, offset=None, timeout=1):
@@ -51,8 +52,9 @@ class BotHandler:
         self.offset = update_id + 1
 
         try:
-            self.dbconnector.log_update(update_id=update_id, update=last_update)
-        except postgresql.exceptions.UniqueError:
+            with self.db as con:
+                con.log_update(update_id=update_id, update=last_update)
+        except pg_errors.UniqueViolation:
             pass
 
         return last_update
@@ -109,31 +111,54 @@ class BotHandler:
 
 
 class DBConnector:
-    def __init__(self, url, user, password, schema):
-        self.url = url
-        self.user = user
-        self.password = password
+    def __init__(self, host, user, password, schema):
         self.schema = schema
-        self.db = postgresql.open('pq://{0}:{1}@{2}:5432/{0}'.format(user, password, url))
+        self.connection_params = dict(host=host, port=5432, dbname=user, user=user, password=password)
+        self.connection = None
 
-    def log_update(self, update_id, update):
-        query = """
-            INSERT INTO {0}.updates (update_id, update_json) VALUES ({1}, '{2}')
-        """.format(self.schema, update_id, json.dumps(update))
-        self.db.execute(query)
+    def connect(self):
+        self.connection = pg_connect(**self.connection_params)
+
+    def cursor(self):
+        return self.connection.cursor()
+
+    def close(self):
+        self.connection.close()
 
     def insert(self, table, columns, values):
-        query = """
-            INSERT INTO {0}.{1} ({2}) VALUES ({3})
-        """.format(self.schema, table, ', '.join(columns), ', '.join(values))
-        self.db.execute(query)
+        parameters = ','.join(['%s' for _ in values])
+        column_names = ','.join(columns)
+        with self.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {self.schema}.{table} ({column_names}) VALUES ({parameters})",
+                values
+            )
+
+    def log_update(self, update_id, update):
+        self.insert(
+            table='updates',
+            columns=['update_id', 'update_json'],
+            values=(update_id, json.dumps(update))
+        )
 
     def select(self, table, columns):
-        query = """
-            SELECT {0} FROM {1}.{2}
-        """.format(columns, self.schema, table)
-        return self.db.query(query)
+        column_names = ','.join(columns)
+        with self.cursor() as cur:
+            cur.execute(
+                f"SELECT {column_names} FROM {self.schema}.{table}"
+            )
+            return cur.fetchall()
 
     def custom_select(self, query):
         query = query.format(schema=self.schema)
-        return self.db.query(query)
+        with self.cursor() as cur:
+            cur.execute(query)
+            return cur.fetchall()
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.connection.commit()
+        self.close()
